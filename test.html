@@ -1,0 +1,651 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Orbit Decay 3D - Multi-Planet Parkour Edition</title>
+    <style>
+        body, html {
+            margin: 0; padding: 0;
+            overflow: hidden;
+            background-color: #030509;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            width: 100%; height: 100%;
+        }
+        #ui {
+            position: absolute;
+            top: 20px; left: 20px;
+            color: #00e5ff;
+            text-shadow: 0 0 8px rgba(0,229,255,0.6);
+            pointer-events: none;
+            user-select: none;
+            z-index: 2;
+        }
+        #telemetry {
+            position: absolute;
+            top: 20px; right: 20px;
+            background: rgba(13, 18, 32, 0.85);
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #141b2d;
+            color: #fff;
+            font-size: 14px;
+            pointer-events: none;
+        }
+        .hud-val { color: #00e5ff; font-weight: bold; }
+        #blocker {
+            position: absolute;
+            width: 100%; height: 100%;
+            background-color: rgba(5, 7, 15, 0.85);
+            display: flex; justify-content: center; align-items: center;
+            color: #ffffff; z-index: 10;
+        }
+        #instructions {
+            text-align: center;
+            background: #0d1220;
+            padding: 35px;
+            border-radius: 12px;
+            border: 2px solid #00e5ff;
+            box-shadow: 0 0 25px rgba(0, 229, 255, 0.3);
+            max-width: 450px;
+            cursor: pointer;
+        }
+        .highlight { color: #00e5ff; font-weight: bold; }
+        #crosshair {
+            position: absolute;
+            top: 50%; left: 50%;
+            width: 10px; height: 10px;
+            transform: translate(-50%, -50%);
+            border: 2px solid rgba(0, 229, 255, 0.5);
+            border-radius: 50%;
+            pointer-events: none;
+            z-index: 5;
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+    <div id="blocker">
+        <div id="instructions">
+            <h2 style="margin-top:0; color:#fff; letter-spacing:1px;">ORBIT DECAY 3D</h2>
+            <p style="color:#8fa0ba; margin-bottom: 20px; font-size: 15px;">
+                Click to engage flight engine controls.
+            </p>
+            <div style="font-size: 14px; text-align: left; background: #05070f; padding: 15px; border-radius: 6px; border: 1px solid #141b2d; line-height: 1.6;">
+                • <span class="highlight">Hold W / S</span>: Accelerate / Brake.<br>
+                • <span class="highlight">Spacebar</span>: Real Barrel Roll (Spiral path).<br>
+                • <span class="highlight">Q Key</span>: Knife Edge (90° Left Wing Slide).<br>
+                • <span class="highlight">P Key</span>: Full Vertical Loop-de-Loop.<br>
+                • <span class="highlight">M Key</span>: Cobra Maneuver (Hard Braking Stall).<br>
+                • <span class="highlight">Z Key</span>: Immelmann Turn (Half Loop + Reverse).
+            </div>
+        </div>
+    </div>
+
+    <div id="ui">
+        <h1>ORBIT DECAY 3D</h1>
+        <p id="flight-status" style="margin:5px 0 0 0; color:#8fa0ba;">Location: Deep Space Sector</p>
+    </div>
+
+    <div id="telemetry">
+        <div>Dimension: <span id="hud-dim" class="hud-val" style="color:#00e5ff;">SPACE</span></div>
+        <div>Velocity: <span id="hud-speed" class="hud-val">0</span> km/h</div>
+        <div>Coordinates: <span id="hud-coords" class="hud-val">0, 0, 0</span></div>
+        <div style="margin-top:5px; border-top:1px solid #223; padding-top:5px;">Rings Cleared: <span id="hud-parkour" class="hud-val" style="color:#ffea00;">0 / 25</span></div>
+    </div>
+
+    <div id="crosshair"></div>
+
+    <script>
+        // --- 1. CORE PIPELINE INITIALIZATION ---
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 15000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        scene.add(new THREE.AmbientLight(0xaaaaaa)); 
+        const sun = new THREE.DirectionalLight(0xffffff, 1.5);
+        sun.position.set(400, 600, 300);
+        scene.add(sun);
+
+        // Cosmic Starry Backdrop
+        const starsGeom = new THREE.BufferGeometry();
+        const starCount = 4000;
+        const starArr = new Float32Array(starCount * 3);
+        for(let i=0; i<starCount*3; i++) starArr[i] = (Math.random() - 0.5) * 12000;
+        starsGeom.setAttribute('position', new THREE.BufferAttribute(starArr, 3));
+        const starField = new THREE.Points(starsGeom, new THREE.PointsMaterial({color: 0xffffff, size: 1.2}));
+        scene.add(starField);
+
+        // --- 2. GLOBAL SIMULATION VARIABLES ---
+        let currentDimension = "SPACE"; 
+        let ringsClearedCount = 0;
+        let crashAnimationTimer = 0;
+        let isCrashed = false;
+
+        // Stunt Control Block
+        let activeStunt = null; // "BARREL", "KNIFE", "LOOP", "COBRA", "IMMELMANN"
+        let stuntProgress = 0;
+
+        const flight = {
+            speed: 0, maxSpeed: 3.2, accel: 0.03, drag: 0.994,
+            yaw: 0, pitch: 0, roll: 0
+        };
+
+        const spaceEntities = [];
+        const earthEntities = [];
+        const marsEntities = [];
+        const neptuneEntities = [];
+        const parkourRings = [];
+        
+        let portalToEarth, portalToSpace, portalToMars, portalToNeptune;
+
+        // --- 3. RUNWAY BASE AND RAMP BUILDER FUNCTION ---
+        function buildAirfieldStation(rootX, rootY, rootZ, baseColor, entityArray) {
+            const group = new THREE.Group();
+            group.position.set(rootX, rootY, rootZ);
+
+            const padMat = new THREE.MeshStandardMaterial({ color: baseColor, roughness: 0.7 });
+
+            const platform = new THREE.Mesh(new THREE.BoxGeometry(30, 2, 120), padMat);
+            platform.position.set(0, -1, 0);
+            group.add(platform);
+            entityArray.push({ mesh: platform, type: "custom_box", sizeX: 30, sizeY: 2, sizeZ: 120 });
+
+            const rampGeom = new THREE.BoxGeometry(30, 2, 40);
+            rampGeom.translate(0, 0, -20); 
+            const ramp = new THREE.Mesh(rampGeom, padMat);
+            
+            ramp.position.set(0, -1, -60);
+            ramp.rotation.x = -0.15; 
+            group.add(ramp);
+            entityArray.push({ mesh: ramp, type: "custom_box", sizeX: 30, sizeY: 2, sizeZ: 40, isRamp: true });
+
+            scene.add(group);
+            return group;
+        }
+
+        // --- 4. SPACE REGION BOUNDS (7 Planets Total) ---
+        function createSpacePlanet(radius, color, x, y, z) {
+            const geom = new THREE.SphereGeometry(radius, 16, 16);
+            const mat = new THREE.MeshStandardMaterial({ color: color, wireframe: true });
+            const mesh = new THREE.Mesh(geom, mat);
+            mesh.position.set(x, y, z);
+            scene.add(mesh);
+            spaceEntities.push({ mesh, radius, type: "planet" });
+            return mesh;
+        }
+
+        const spacePlanetHome = createSpacePlanet(80, 0x112744, 0, -140, -250);
+        createSpacePlanet(40, 0x551111, 700, 300, -800);
+        createSpacePlanet(35, 0xcc3300, -600, 150, -400);   // Mars
+        createSpacePlanet(50, 0xe0ae62, 1200, -100, -1200); // Venus
+        createSpacePlanet(110, 0xd4a373, -1500, 400, -2000); // Jupiter
+        createSpacePlanet(85, 0xe9c46a, 2000, 600, -500);   // Saturn
+        createSpacePlanet(55, 0x0077b6, -200, -500, -1500); // Neptune
+
+        const spaceAirfield = buildAirfieldStation(0, -58, -250, 0x1d273a, spaceEntities);
+
+        portalToEarth = new THREE.Mesh(new THREE.TorusGeometry(18, 1.5, 8, 32), new THREE.MeshBasicMaterial({ color: 0x9900ff, wireframe: true }));
+        portalToEarth.position.set(0, 50, -500);
+        scene.add(portalToEarth);
+
+        portalToMars = new THREE.Mesh(new THREE.TorusGeometry(18, 1.5, 8, 32), new THREE.MeshBasicMaterial({ color:  0xff3300, wireframe: true }));
+        portalToMars.position.set(-250, 80, -350);
+        scene.add(portalToMars);
+
+        portalToNeptune = new THREE.Mesh(new THREE.TorusGeometry(18, 1.5, 8, 32), new THREE.MeshBasicMaterial({ color: 0x00bfff, wireframe: true }));
+        portalToNeptune.position.set(200, -100, -700);
+        scene.add(portalToNeptune);
+
+
+        // --- 5. WORLD DIMENSIONS MATRIX ---
+        // EARTH
+        const earthCenter = new THREE.Vector3(5000, 0, 5000);
+        const groundContinent = new THREE.Mesh(new THREE.BoxGeometry(1500, 10, 1500), new THREE.MeshStandardMaterial({ color: 0x151b26 }));
+        groundContinent.position.copy(earthCenter).add(new THREE.Vector3(0, -5, 0));
+        groundContinent.visible = false;
+        scene.add(groundContinent);
+        earthEntities.push({ mesh: groundContinent, type: "floor_plane" });
+
+        const earthAirfield = buildAirfieldStation(earthCenter.x, earthCenter.y + 2, earthCenter.z + 400, 0x222b3c, earthEntities);
+        earthAirfield.visible = false;
+
+        const colorPalette = [0x3a4b6e, 0x2c3545, 0x4a5d82, 0x1e2530];
+        for (let x = -4; x <= 4; x++) {
+            for (let z = -4; z <= 4; z++) {
+                if (Math.abs(x) <= 1 && z >= 2) continue; 
+                if (Math.abs(x) <= 1 && Math.abs(z) <= 1) continue; 
+
+                const bHeight = 80 + Math.random() * 160;
+                const bWidth = 30 + Math.random() * 15;
+                const randomColor = colorPalette[Math.floor(Math.random() * colorPalette.length)];
+                
+                const building = new THREE.Mesh(new THREE.BoxGeometry(bWidth, bHeight, bWidth), new THREE.MeshStandardMaterial({ color: randomColor }));
+                building.position.set(earthCenter.x + x * 110, bHeight / 2, earthCenter.z + z * 110);
+                building.visible = false;
+                scene.add(building);
+                earthEntities.push({ mesh: building, sizeX: bWidth, sizeY: bHeight, sizeZ: bWidth, type: "building" });
+            }
+        }
+        portalToSpace = new THREE.Mesh(new THREE.TorusGeometry(18, 1.5, 8, 32), new THREE.MeshBasicMaterial({ color: 0x00ffaa, wireframe: true }));
+        portalToSpace.position.copy(earthCenter).add(new THREE.Vector3(0, 180, 0));
+        portalToSpace.visible = false;
+        scene.add(portalToSpace);
+
+        // MARS
+        const marsCenter = new THREE.Vector3(-5000, 0, 5000);
+        const marsGround = new THREE.Mesh(new THREE.BoxGeometry(1500, 10, 1500), new THREE.MeshStandardMaterial({ color: 0x3d1a11 }));
+        marsGround.position.copy(marsCenter).add(new THREE.Vector3(0, -5, 0));
+        marsGround.visible = false;
+        scene.add(marsGround);
+        marsEntities.push({ mesh: marsGround, type: "floor_plane" });
+
+        const marsAirfield = buildAirfieldStation(marsCenter.x, marsCenter.y + 2, marsCenter.z + 400, 0x5e2c22, marsEntities);
+        marsAirfield.visible = false;
+
+        for(let i=0; i<25; i++) {
+            const cHeight = 100 + Math.random() * 180;
+            const cRad = 15 + Math.random() * 20;
+            const col = new THREE.Mesh(new THREE.CylinderGeometry(cRad, cRad+10, cHeight, 8), new THREE.MeshStandardMaterial({ color: 0x823c30 }));
+            col.position.set(marsCenter.x + (Math.random()-0.5)*800, cHeight/2, marsCenter.z + (Math.random()-0.5)*800);
+            if(col.position.distanceTo(marsCenter.clone().add(new THREE.Vector3(0,0,400))) < 150) col.position.x += 200; 
+            col.visible = false;
+            scene.add(col);
+            marsEntities.push({ mesh: col, sizeX: cRad*2, sizeY: cHeight, sizeZ: cRad*2, type: "building" });
+        }
+
+        // NEPTUNE
+        const neptuneCenter = new THREE.Vector3(0, 5000, -5000);
+        const neptuneGround = new THREE.Mesh(new THREE.BoxGeometry(1500, 10, 1500), new THREE.MeshStandardMaterial({ color: 0x0f2042 }));
+        neptuneGround.position.copy(neptuneCenter).add(new THREE.Vector3(0, -5, 0));
+        neptuneGround.visible = false;
+        scene.add(neptuneGround);
+        neptuneEntities.push({ mesh: neptuneGround, type: "floor_plane" });
+
+        const neptuneAirfield = buildAirfieldStation(neptuneCenter.x, neptuneCenter.y + 2, neptuneCenter.z + 400, 0x17346c, neptuneEntities);
+        neptuneAirfield.visible = false;
+
+        for(let i=0; i<30; i++) {
+            const h = 120 + Math.random() * 220;
+            const w = 20 + Math.random() * 20;
+            const ice = new THREE.Mesh(new THREE.ConeGeometry(w, h, 6), new THREE.MeshStandardMaterial({ color: 0x4cc9f0, wireframe: true }));
+            ice.position.set(neptuneCenter.x + (Math.random()-0.5)*900, h/2, neptuneCenter.z + (Math.random()-0.5)*900);
+            if(ice.position.distanceTo(neptuneCenter.clone().add(new THREE.Vector3(0,0,400))) < 150) ice.position.x -= 200;
+            ice.visible = false;
+            scene.add(ice);
+            neptuneEntities.push({ mesh: ice, sizeX: w*1.5, sizeY: h, sizeZ: w*1.5, type: "building" });
+        }
+
+        // --- 6. PARKOUR RINGS ---
+        const ringGeom = new THREE.TorusGeometry(13, 0.9, 8, 24);
+        const positions = [
+            { pos: [0, -40, -380], dim: "SPACE" }, { pos: [0, 0, -440], dim: "SPACE" }, { pos: [0, 40, -480], dim: "SPACE" },
+            { pos: [-100, 60, -420], dim: "SPACE" }, { pos: [-200, 75, -370], dim: "SPACE" }, { pos: [80, -30, -550], dim: "SPACE" }, { pos: [160, -70, -650], dim: "SPACE" },
+            { pos: [5000, 40, 5260], dim: "EARTH" }, { pos: [5000, 90, 5100], dim: "EARTH" }, { pos: [5110, 130, 4950], dim: "EARTH" },
+            { pos: [4890, 70, 4800], dim: "EARTH" }, { pos: [5000, 160, 4650], dim: "EARTH" }, { pos: [5150, 210, 4500], dim: "EARTH" }, { pos: [5000, 240, 4400], dim: "EARTH" },
+            { pos: [-5000, 30, 5250], dim: "MARS" }, { pos: [-4850, 70, 5100], dim: "MARS" }, { pos: [-5150, 110, 4950], dim: "MARS" },
+            { pos: [-5000, 140, 4800], dim: "MARS" }, { pos: [-4750, 90, 4650], dim: "MARS" }, { pos: [-5200, 160, 4500], dim: "MARS" },
+            { pos: [0, 5030, -4740], dim: "NEPTUNE" }, { pos: [100, 5120, -4600], dim: "NEPTUNE" }, { pos: [-120, 5060, -4450], dim: "NEPTUNE" },
+            { pos: [0, 5220, -4300], dim: "NEPTUNE" }, { pos: [200, 5090, -4150], dim: "NEPTUNE" }, { pos: [0, 5350, -3950], dim: "NEPTUNE" }
+        ];
+
+        positions.forEach((data, index) => {
+            const rMat = new THREE.MeshBasicMaterial({ color: 0x00e5ff, wireframe: true });
+            const ringMesh = new THREE.Mesh(ringGeom, rMat);
+            ringMesh.position.set(data.pos[0], data.pos[1], data.pos[2]);
+            if(data.dim !== "SPACE") {
+                ringMesh.rotation.y = (Math.random() - 0.5) * 0.6;
+                ringMesh.rotation.x = (Math.random() - 0.5) * 0.4;
+            }
+            ringMesh.visible = (data.dim === "SPACE"); 
+            scene.add(ringMesh);
+            parkourRings.push({ mesh: ringMesh, material: rMat, cleared: false, id: index + 1, dim: data.dim });
+        });
+
+        // --- 7. JET VEHICLE CONSTRUCTION ---
+        const player = new THREE.Group();
+        const bodyMat = new THREE.MeshStandardMaterial({ color: 0x00e5ff, wireframe: true });
+        const wingMat = new THREE.MeshStandardMaterial({ color: 0x00a3ad, wireframe: true });
+
+        const fuselage = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.3, 4, 8), bodyMat);
+        fuselage.rotateX(Math.PI / 2); player.add(fuselage);
+        const wings = new THREE.Mesh(new THREE.BoxGeometry(6, 0.05, 1.2), wingMat);
+        wings.position.set(0, 0, 0.4); player.add(wings);
+        const tail = new THREE.Mesh(new THREE.BoxGeometry(0.05, 1, 0.6), wingMat);
+        tail.position.set(0, 0.5, -1.5); player.add(tail);
+        scene.add(player);
+        
+        function respawnPlayer() {
+            isCrashed = false;
+            activeStunt = null;
+            stuntProgress = 0;
+            flight.speed = 0;
+            bodyMat.color.setHex(0x00e5ff);
+            wingMat.color.setHex(0x00a3ad);
+            player.scale.set(1, 1, 1);
+            player.rotation.set(0, 0, 0);
+            flight.yaw = 0; flight.pitch = 0; flight.roll = 0;
+            
+            if (currentDimension === "SPACE") {
+                player.position.set(0, -56.5, -200); 
+            } else if (currentDimension === "EARTH") {
+                player.position.copy(earthCenter).add(new THREE.Vector3(0, 3.5, 450));
+            } else if (currentDimension === "MARS") {
+                player.position.copy(marsCenter).add(new THREE.Vector3(0, 3.5, 450));
+            } else if (currentDimension === "NEPTUNE") {
+                player.position.copy(neptuneCenter).add(new THREE.Vector3(0, 3.5, 450));
+            }
+        }
+        respawnPlayer();
+
+        // --- 8. INPUT SYSTEMS ---
+        const blocker = document.getElementById('blocker');
+        document.getElementById('instructions').addEventListener('click', () => { document.body.requestPointerLock(); });
+        document.addEventListener('pointerlockchange', () => {
+            blocker.style.display = (document.pointerLockElement === document.body) ? 'none' : 'flex';
+        });
+
+        const sensitivity = 0.0020;
+        document.addEventListener('mousemove', (e) => {
+            if (document.pointerLockElement !== document.body || isCrashed || activeStunt) return;
+            flight.yaw -= e.movementX * sensitivity;
+            flight.pitch -= e.movementY * sensitivity;
+            flight.pitch = Math.max(-Math.PI/2.1, Math.min(Math.PI/2.1, flight.pitch));
+        });
+
+        const keys = { w: false, s: false, a: false, d: false };
+        window.addEventListener('keydown', (e) => { 
+            if (isCrashed) return;
+            const key = e.key.toLowerCase();
+            if(key in keys) keys[key] = true; 
+            
+            // Trigger Stunts (Only if moving and not currently in a stunt)
+            if (!activeStunt && flight.speed > 0.3) {
+                if (key === ' ') { activeStunt = "BARREL"; stuntProgress = 0; }
+                else if (key === 'q') { activeStunt = "KNIFE"; stuntProgress = 0; }
+                else if (key === 'p') { activeStunt = "LOOP"; stuntProgress = 0; }
+                else if (key === 'm') { activeStunt = "COBRA"; stuntProgress = 0; }
+                else if (key === 'z') { activeStunt = "IMMELMANN"; stuntProgress = 0; }
+            }
+        });
+        window.addEventListener('keyup', (e) => { if(e.key.toLowerCase() in keys) keys[e.key.toLowerCase()] = false; });
+
+        function switchDimension(targetWorld, statusText, colorHex) {
+            currentDimension = targetWorld;
+            document.getElementById('hud-dim').innerText = targetWorld;
+            document.getElementById('hud-dim').style.color = colorHex;
+            document.getElementById('flight-status').innerText = statusText;
+            
+            const isSpace = (targetWorld === "SPACE");
+            spaceEntities.forEach(ent => ent.mesh.visible = isSpace);
+            spaceAirfield.visible = isSpace;
+            portalToEarth.visible = isSpace;
+            portalToMars.visible = isSpace;
+            portalToNeptune.visible = isSpace;
+            starField.visible = isSpace;
+            
+            earthEntities.forEach(ent => ent.mesh.visible = (targetWorld === "EARTH"));
+            earthAirfield.visible = (targetWorld === "EARTH");
+            portalToSpace.visible = (targetWorld !== "SPACE"); 
+            
+            marsEntities.forEach(ent => ent.mesh.visible = (targetWorld === "MARS"));
+            marsAirfield.visible = (targetWorld === "MARS");
+
+            neptuneEntities.forEach(ent => ent.mesh.visible = (targetWorld === "NEPTUNE"));
+            neptuneAirfield.visible = (targetWorld === "NEPTUNE");
+
+            if(!isSpace) {
+                portalToSpace.position.copy(
+                    targetWorld === "EARTH" ? earthCenter : (targetWorld === "MARS" ? marsCenter : neptuneCenter)
+                ).add(new THREE.Vector3(0, 180, 0));
+            }
+
+            parkourRings.forEach(r => r.mesh.visible = (r.dim === targetWorld));
+            respawnPlayer();
+        }
+
+        // --- 9. ANIMATION & LOGIC CORE ENGINE ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            if (isCrashed) {
+                crashAnimationTimer += 0.05;
+                player.position.y -= 0.2; player.rotation.z += 0.2; player.scale.multiplyScalar(0.96);
+                if (crashAnimationTimer >= 2.5) respawnPlayer();
+                renderer.render(scene, camera);
+                return;
+            }
+
+            // Engine Thrust Updates
+            if (keys.w) {
+                flight.speed = Math.min(flight.speed + flight.accel, flight.maxSpeed);
+            } else if (keys.s) {
+                flight.speed = Math.max(flight.speed - flight.accel * 1.5, 0);
+            } else {
+                flight.speed *= flight.drag;
+            }
+
+            // --- STUNT MANEUVER MATRIX PIPELINE ---
+            let dynamicPitch = flight.pitch;
+            let dynamicRoll = flight.roll;
+            let stuntTranslation = new THREE.Vector3(0, 0, 0);
+
+            if (activeStunt) {
+                stuntProgress += 0.025; // Speed of the animations
+                bodyMat.color.setHex(0xffaa00);
+
+                if (activeStunt === "BARREL") {
+                    // Physical spiraling trajectory pathing
+                    let angle = stuntProgress * Math.PI * 2;
+                    dynamicRoll = angle; 
+                    stuntTranslation.x = Math.sin(angle) * 0.4;
+                    stuntTranslation.y = (Math.cos(angle) - 1) * -0.4;
+                    
+                    if (stuntProgress >= 1.0) activeStunt = null;
+
+                } else if (activeStunt === "KNIFE") {
+                    // Slip roll sideways holding 90 deg 
+                    if (stuntProgress < 0.2) dynamicRoll = (stuntProgress / 0.2) * (Math.PI / 2);
+                    else if (stuntProgress < 0.8) {
+                        dynamicRoll = Math.PI / 2;
+                        stuntTranslation.x = -0.5; // Slide sideways left physically
+                    } else {
+                        dynamicRoll = (Math.PI / 2) * ((1.0 - stuntProgress) / 0.2);
+                    }
+                    if (stuntProgress >= 1.0) activeStunt = null;
+
+                } else if (activeStunt === "LOOP") {
+                    // Full 360 vertical pitch loop
+                    let angle = stuntProgress * Math.PI * 2;
+                    dynamicPitch = flight.pitch + angle;
+                    stuntTranslation.y = Math.sin(angle) * 0.8;
+                    
+                    // Keep camera alignment tracking smooth
+                    flight.pitch = dynamicPitch;
+                    if (stuntProgress >= 1.0) {
+                        activeStunt = null;
+                        flight.pitch = 0; 
+                    }
+
+                } else if (activeStunt === "COBRA") {
+                    // Sudden pitch brake stall
+                    if (stuntProgress < 0.3) {
+                        dynamicPitch = (stuntProgress / 0.3) * (Math.PI / 2.5);
+                        flight.speed *= 0.92; // Heavy dynamic drag braking
+                    } else if (stuntProgress < 0.6) {
+                        dynamicPitch = Math.PI / 2.5;
+                    } else {
+                        dynamicPitch = (Math.PI / 2.5) * ((1.0 - stuntProgress) / 0.4);
+                    }
+                    if (stuntProgress >= 1.0) activeStunt = null;
+
+                } else if (activeStunt === "IMMELMANN") {
+                    // Half loop up, half roll out
+                    if (stuntProgress < 0.5) {
+                        let angle = (stuntProgress / 0.5) * Math.PI;
+                        dynamicPitch = angle;
+                        stuntTranslation.y = Math.sin(angle) * 0.6;
+                    } else {
+                        dynamicPitch = Math.PI;
+                        let rollAngle = ((stuntProgress - 0.5) / 0.5) * Math.PI;
+                        dynamicRoll = rollAngle;
+                    }
+                    if (stuntProgress >= 1.0) {
+                        activeStunt = null;
+                        flight.yaw += Math.PI; // Heading completely reversed physically
+                        flight.pitch = 0;
+                        flight.roll = 0;
+                    }
+                }
+            } else {
+                // Regular flight roll controls
+                bodyMat.color.setHex(keys.w ? 0xff3333 : 0x00e5ff);
+                if(keys.a) flight.roll = Math.min(flight.roll + 0.05, 0.6);
+                else if(keys.d) flight.roll = Math.max(flight.roll - 0.05, -0.6);
+                else flight.roll *= 0.9;
+                dynamicRoll = flight.roll;
+            }
+
+            // Apply calculated rotational quaternions
+            const rotEuler = new THREE.Euler(dynamicPitch, flight.yaw, dynamicRoll, 'YXZ');
+            player.quaternion.setFromEuler(rotEuler);
+
+            // Forward Velocity Movements
+            const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(player.quaternion);
+            player.position.addScaledVector(forward, flight.speed);
+
+            // Apply horizontal and vertical translational offset additions from tricks
+            if (activeStunt) {
+                const stuntVec = stuntTranslation.applyQuaternion(player.quaternion);
+                player.position.add(stuntVec);
+            }
+
+            // Normal strafe maneuvers (disabled mid-stunt to avoid breaking curves)
+            const rightVec = new THREE.Vector3(1, 0, 0).applyQuaternion(player.quaternion);
+            if(!activeStunt) {
+                if(keys.a) player.position.addScaledVector(rightVec, -flight.speed * 0.35);
+                if(keys.d) player.position.addScaledVector(rightVec, flight.speed * 0.35);
+            }
+
+            // --- PORTAL HIT CHECKS ---
+            if (currentDimension === "SPACE") {
+                if (player.position.distanceTo(portalToEarth.position) < 22) {
+                    switchDimension("EARTH", "Arrived on Earth. Fly carefully between buildings!", "#00ffaa");
+                    return;
+                }
+                if (player.position.distanceTo(portalToMars.position) < 22) {
+                    switchDimension("MARS", "Arrived on Mars. Watch out for mountain spires!", "#ff5500");
+                    return;
+                }
+                if (player.position.distanceTo(portalToNeptune.position) < 22) {
+                    switchDimension("NEPTUNE", "Arrived on Neptune. Frozen ice fields await!", "#00bfff");
+                    return;
+                }
+            } else {
+                if (player.position.distanceTo(portalToSpace.position) < 22) {
+                    switchDimension("SPACE", "Warped into Space Orbit. Dynamic planets discovered.", "#00e5ff");
+                    return;
+                }
+            }
+
+            // --- COLLISION COMPILATION MATRIX ---
+            let activeObstacles = spaceEntities;
+            if (currentDimension === "EARTH") activeObstacles = earthEntities;
+            if (currentDimension === "MARS") activeObstacles = marsEntities;
+            if (currentDimension === "NEPTUNE") activeObstacles = neptuneEntities;
+
+            activeObstacles.forEach(obj => {
+                if (obj.type === "planet") {
+                    const dist = player.position.distanceTo(obj.mesh.position);
+                    if (dist < obj.radius + 1.5) triggerCrashEvaluation();
+                } else if (obj.type === "floor_plane") {
+                    if (player.position.y <= 1.0 && currentDimension !== "NEPTUNE") triggerCrashEvaluation();
+                    if (currentDimension === "NEPTUNE" && player.position.y <= 5001.0) triggerCrashEvaluation();
+                } else if (obj.type === "custom_box") {
+                    const localPos = player.position.clone().sub(obj.mesh.parent.position);
+                    let checkX = Math.abs(localPos.x - obj.mesh.position.x) < (obj.sizeX / 2 + 1.0);
+                    let checkZ = Math.abs(localPos.z - obj.mesh.position.z) < (obj.sizeZ / 2 + 1.0);
+                    
+                    if (checkX && checkZ) {
+                        let SurfaceElevation = obj.mesh.position.y;
+                        if (obj.isRamp) {
+                            let t = (localPos.z - (obj.mesh.position.z + 20)) / -40; 
+                            t = Math.max(0, Math.min(1, t));
+                            SurfaceElevation = obj.mesh.position.y + (t * 6.0); 
+                        }
+                        if (localPos.y < SurfaceElevation + 1.2 && localPos.y > SurfaceElevation - 2.0) {
+                            if (flight.speed > 0.5) {
+                                triggerCrashEvaluation();
+                            } else {
+                                player.position.y = obj.mesh.parent.position.y + SurfaceElevation + 1.5;
+                                if (!obj.isRamp && !activeStunt) flight.pitch = 0;
+                            }
+                        }
+                    }
+                } else if (obj.type === "building") {
+                    const pPos = player.position;
+                    const mPos = obj.mesh.position;
+                    const hX = obj.sizeX / 2 + 1.2;
+                    const hY = obj.sizeY / 2 + 1.2;
+                    const hZ = obj.sizeZ / 2 + 1.2;
+
+                    if (pPos.x > mPos.x - hX && pPos.x < mPos.x + hX &&
+                        pPos.y > mPos.y - hY && pPos.y < mPos.y + hY &&
+                        pPos.z > mPos.z - hZ && pPos.z < mPos.z + hZ) {
+                        triggerCrashEvaluation();
+                    }
+                }
+            });
+
+            function triggerCrashEvaluation() {
+                if (flight.speed > 0.45) {
+                    isCrashed = true; crashAnimationTimer = 0;
+                    bodyMat.color.setHex(0xff5500); wingMat.color.setHex(0xffaa00);
+                    document.getElementById('flight-status').innerText = "💥 CRASHED! VEHICLE DESTROYED.";
+                } else {
+                    flight.speed = -0.1; 
+                }
+            }
+
+            // Ring checkpoint collection loops
+            parkourRings.forEach(ring => {
+                if (!ring.cleared && ring.mesh.visible) {
+                    if (player.position.distanceTo(ring.mesh.position) < 14) {
+                        ring.cleared = true;
+                        ring.material.color.setHex(0x33ff33);
+                        ringsClearedCount++;
+                        document.getElementById('hud-parkour').innerText = `${ringsClearedCount} / ${parkourRings.length}`;
+                    }
+                }
+            });
+
+            portalToEarth.rotation.z += 0.02;
+            portalToMars.rotation.z += 0.02;
+            portalToNeptune.rotation.z += 0.02;
+            portalToSpace.rotation.z += 0.02;
+
+            const camOffset = new THREE.Vector3(0, 1.8, 6.5).applyQuaternion(player.quaternion);
+            camera.position.copy(player.position).add(camOffset);
+            const lookTarget = new THREE.Vector3(0, 0, -10).applyQuaternion(player.quaternion);
+            camera.lookAt(player.position.clone().add(lookTarget));
+
+            document.getElementById('hud-speed').innerText = Math.round(flight.speed * 450);
+            document.getElementById('hud-coords').innerText = 
+                `${Math.round(player.position.x)}, ${Math.round(player.position.y)}, ${Math.round(player.position.z)}`;
+
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        animate();
+    </script>
+</body>
+</html>
